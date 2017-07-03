@@ -20,12 +20,19 @@
 #define WINVER 0x0500
  
 #include <windows.h>
+#include <tchar.h>
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <getopt.h>
- 
+
 #define MESSAGE_LENGTH 100
- 
+
+enum {
+    TOGGLE_RTS = 60, // Maps to F2
+    EXIT = 62 // Maps to F4
+};
+
 // Declare variables and structures
 HANDLE hSerial = INVALID_HANDLE_VALUE;
 DCB dcbSerialParams = {0};
@@ -33,16 +40,18 @@ COMMTIMEOUTS timeouts = {0};
 DWORD dwBytesWritten = 0;
 char dev_name[MAX_PATH] = "";
 int dev_number = -1;
-int baudrate = 2400;
+int baudrate = 74880;
 int scan_max = 30;
 int scan_min = 1;
-int simulate_keystrokes = 0;
 int debug = 1; // print some info by default
-int id = -1;
+int rts = 0;
 
-#define DEBUG(fmt, ...) if (debug >= 1) fprintf(stderr, "DEBUG[%d]: " fmt "\n", __LINE__, ##__VA_ARGS__)
-#define INFO(fmt, ...) if (debug >= 0) fprintf(stderr, "INFO[%d]: " fmt "\n", __LINE__, ##__VA_ARGS__)
-#define WARN(fmt, ...) if (debug >= -1) fprintf(stderr, "Warning: " fmt "\n", ##__VA_ARGS__)
+HANDLE  hThread[2]; 
+DWORD threadId[2];
+
+#define DEBUG(fmt, ...) if (debug > 1) fprintf(stderr, "DEBUG[%d]: " fmt "\n", __LINE__, ##__VA_ARGS__)
+#define INFO(fmt, ...) if (debug > 0) fprintf(stderr, "INFO[%d]: " fmt "\n", __LINE__, ##__VA_ARGS__)
+#define WARN(fmt, ...) if (debug > -1) fprintf(stderr, "Warning: " fmt "\n", ##__VA_ARGS__)
 #define PERROR(fmt, ...) do { \
     fprintf(stderr, "Error: " fmt "\n", ##__VA_ARGS__); \
     exit(2); \
@@ -56,18 +65,11 @@ void CloseSerialPort()
         INFO("Closing serial port.");
         if (CloseHandle(hSerial) == 0)
             PERROR("Unable to close serial port");
+        hSerial = INVALID_HANDLE_VALUE;
     }
+    exit(0);
 }
  
-void exit_message(const char* Perror_message, int Perror)
-{
-    // Print an Perror message
-    fprintf(stderr, Perror_message);
-    fprintf(stderr, "\n");
- 
-    // Exit the program
-    exit(Perror);
-}
  
 
 static void help(void) 
@@ -100,10 +102,50 @@ static void parse_portspec(char *pspec)
     baudrate = atoi(pspec); // for now FIXME
     DEBUG("Baud rate = %d", baudrate);
 }
+
+static void reader(HANDLE hSerial)
+{
+    char c;
+    DWORD bytes_read;
+ 
+    while(1) {
+        ReadFile(hSerial, &c, 1, &bytes_read, NULL);
+        if (bytes_read == 1)
+            printf("%c", c);
+    }
+
+}
+static void writer(HANDLE hSerial)
+{
+    int c[2], state = 0;
+    while(1) {
+        c[state] = getch();
+        if (state) {
+            DEBUG("Got hotkey %d", c[state]);
+            switch (c[state]) {
+            case TOGGLE_RTS:
+                DEBUG("Toggle RTS");
+                //Status = 
+                EscapeCommFunction(hSerial, (rts?CLRRTS:SETRTS));
+                rts = 1 - rts;
+                break;
+            case EXIT:
+                DEBUG("exit");
+                CloseSerialPort();
+                break;
+            default:
+                WARN("Unhandled hotkey 0,%d", c[state]);
+            }
+            --state;
+        } else if (!c[state]) {
+            ++state;
+        }
+    }
+}
 int main(int argc, char *argv[])
 {
     int opt, n;
-    
+
     while ((opt = getopt(argc, argv, "d:b:p:vqh")) != -1) {
         switch (opt) {
         case 'd':
@@ -180,19 +222,26 @@ int main(int argc, char *argv[])
     timeouts.WriteTotalTimeoutMultiplier = 10;
     if(SetCommTimeouts(hSerial, &timeouts) == 0)
         PERROR("Unable to set timeouts");
- 
-    // Read text and print to console (and maybe simulate keystrokes)
-    int state = 1;
-    //int i;
-    char c;
-    char message_buffer[MESSAGE_LENGTH];
-    DWORD bytes_read;
- 
-    while(1) {
-        ReadFile(hSerial, &c, 1, &bytes_read, NULL);
-        if (bytes_read == 1)
-            printf("%c", c);
-    }
+
+    if (!(hThread[0] = CreateThread( 
+            NULL,                   // default security attributes
+            0,                      // use default stack size  
+            reader,       // thread function name
+            hSerial,          // argument to thread function 
+            0,                      // use default creation flags 
+            &threadId[0])))   // returns the thread identifier 
+        PERROR("Unable to creater reader thread");
+    if (!(hThread[1] = CreateThread( 
+            NULL,                   // default security attributes
+            0,                      // use default stack size  
+            writer,       // thread function name
+            hSerial,          // argument to thread function 
+            0,                      // use default creation flags 
+            &threadId[1])))   // returns the thread identifier 
+        PERROR("Unable to creater writer thread");
+
+    WaitForMultipleObjects(2, hThread, TRUE, INFINITE);
+
  
     // We should never get to this point because when the user
     // presses Ctrl-C, the atexit function will be called instead.
