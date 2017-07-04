@@ -26,11 +26,15 @@
 #include <stdlib.h>
 #include <getopt.h>
 
-#define MESSAGE_LENGTH 100
+#include "disp.h"
+
 
 enum {
+    CTRL_C = 3, // Ctrl+c
     TOGGLE_RTS = 60, // Maps to F2
-    EXIT = 62 // Maps to F4
+    EXIT = 62, // Maps to F4
+    UP = 72, // Up arrow
+    DOWN = 80 // Down arrow (both are after 0x1e)
 };
 
 // Declare variables and structures
@@ -70,7 +74,6 @@ void CloseSerialPort()
     exit(0);
 }
  
- 
 
 static void help(void) 
 {
@@ -92,6 +95,10 @@ static void help(void)
         "\n"
         "    F2  - Toggle RTS\n"
         "    F4  - Quit (you can also use Ctrl-C)\n"
+        "\n"
+        "History is supported via up and down arrow keys, but no editing is supported.\n"
+        "You cannot use left and right arrow keys, backspace, delete etc.\n"
+        "\n"
         "Credits:\n"
         "    Copyright (c) 2017, Klar Systems Private Limited.\n"
         "    Based on code from Ted Burke (https://batchloaf.wordpress.com/comprinter/)\n");
@@ -111,7 +118,7 @@ static void reader(HANDLE hSerial)
     while(1) {
         ReadFile(hSerial, &c, 1, &bytes_read, NULL);
         if (bytes_read == 1)
-            printf("%c", c);
+            disp_rx(c);
     }
 
 }
@@ -120,6 +127,7 @@ static void writer(HANDLE hSerial)
     int c[2], state = 0;
     while(1) {
         c[state] = getch();
+            DEBUG("Got code %d", c[state]);
         if (state) {
             DEBUG("Got hotkey %d", c[state]);
             switch (c[state]) {
@@ -133,12 +141,24 @@ static void writer(HANDLE hSerial)
                 DEBUG("exit");
                 CloseSerialPort();
                 break;
+            case UP:
+                disp_tx_hist(-1);
+                break;
+            case DOWN:
+                disp_tx_hist(1);
+                break;
             default:
                 WARN("Unhandled hotkey 0,%d", c[state]);
             }
             --state;
-        } else if (!c[state]) {
+        } else if (0 == c[state] || 0xe0 == c[state]) {
             ++state;
+        } else if (isprint(c[state]) || c[state] == 13) {
+            WriteFile(hSerial, &c[state], 1, NULL, NULL);
+            disp_tx(c[state]);
+        } else if (c[state] == CTRL_C) {
+            DEBUG("interrupt");
+            CloseSerialPort();            
         }
     }
 }
@@ -222,7 +242,7 @@ int main(int argc, char *argv[])
     timeouts.WriteTotalTimeoutMultiplier = 10;
     if(SetCommTimeouts(hSerial, &timeouts) == 0)
         PERROR("Unable to set timeouts");
-
+    disp_init(1);
     if (!(hThread[0] = CreateThread( 
             NULL,                   // default security attributes
             0,                      // use default stack size  

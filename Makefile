@@ -1,6 +1,6 @@
 
 CFLAGS = -g
-OBJS = comsniff.o
+OBJS = $(patsubst %.c, %.o, $(wildcard *.c))
 
 comsniff.exe: $(OBJS)
 	$(CC) -o $@ $(OBJS)
